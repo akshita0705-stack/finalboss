@@ -1,0 +1,15 @@
+// Counts and ids for one of the caller's websites (findings, observed redirects, external domains).
+USE GRAPH TraceGuardGraph
+
+CREATE OR REPLACE QUERY domain_summary(STRING p_owner, STRING p_domain, INT max_items = 50)
+FOR GRAPH TraceGuardGraph SYNTAX v2 {
+  seed = SELECT s FROM Website:s WHERE s.owner == p_owner AND s.domain == p_domain;
+
+  findings  = SELECT t FROM seed:s -(GENERATED_FINDING:e)- SecurityFinding:t LIMIT max_items;
+  redirects = SELECT t FROM seed:s -((REDIRECTED_TO|rev_REDIRECTED_TO):e)- Website:t
+              WHERE e.is_inferred == false LIMIT max_items;
+  externals = SELECT t FROM seed:s -(CONTACTED:e)- ExternalDomain:t LIMIT max_items;
+  matches   = SELECT t FROM seed:s -(MATCHES_INDICATOR:e)- ThreatIndicator:t LIMIT max_items;
+
+  PRINT seed, findings, redirects, externals, matches;
+}

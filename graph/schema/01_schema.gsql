@@ -1,0 +1,80 @@
+// TraceGuard AI - TigerGraph schema (graph: TraceGuardGraph)
+// STATUS: written to spec; NOT yet executed against a live TigerGraph instance. Verify with graph/README.md.
+//
+// Isolation model: every user-owned vertex id is "<owner>:<value>" where <owner> is a salted hash of the
+// user id (never the raw email/user id). Traversals start from an owner-prefixed Website seed, so one
+// user's subgraph cannot reach another user's vertices. ThreatIndicator is shared, provider-sourced data
+// and contains no browsing information.
+//
+// Run once on a fresh cluster. GSQL CREATE statements fail if the object exists, so re-running is safe
+// (it errors instead of overwriting). Use graph/schema/99_reset_demo.gsql to wipe a DEMO cluster only.
+
+CREATE VERTEX Website (
+  PRIMARY_ID id STRING,
+  owner STRING,
+  domain STRING,
+  first_seen DATETIME,
+  last_seen DATETIME,
+  risk_score INT DEFAULT 0,
+  status_label STRING DEFAULT "UNKNOWN"
+) WITH primary_id_as_attribute="true"
+
+CREATE VERTEX Visit (
+  PRIMARY_ID id STRING,
+  owner STRING,
+  occurred_at DATETIME,
+  event_type STRING,
+  assessment_status STRING DEFAULT "UNKNOWN"
+) WITH primary_id_as_attribute="true"
+
+CREATE VERTEX ExternalDomain (
+  PRIMARY_ID id STRING,
+  owner STRING,
+  domain STRING,
+  first_seen DATETIME,
+  last_seen DATETIME,
+  category STRING DEFAULT "unclassified"
+) WITH primary_id_as_attribute="true"
+
+CREATE VERTEX ThreatIndicator (
+  PRIMARY_ID id STRING,
+  indicator STRING,
+  provider STRING,
+  category STRING,
+  derivation STRING DEFAULT "provider"   // provider | rule
+) WITH primary_id_as_attribute="true"
+
+CREATE VERTEX SecurityFinding (
+  PRIMARY_ID id STRING,
+  owner STRING,
+  domain STRING,
+  severity STRING,
+  status_label STRING,
+  risk_score INT,
+  confidence STRING,
+  created_at DATETIME
+) WITH primary_id_as_attribute="true"
+
+// Every edge records provenance. is_inferred=true means "derived by a rule", never "observed".
+CREATE DIRECTED EDGE VISITED_DOMAIN (FROM Visit, TO Website,
+  observed_at DATETIME, evidence_source STRING DEFAULT "extension", is_inferred BOOL DEFAULT false)
+  WITH REVERSE_EDGE="rev_VISITED_DOMAIN"
+
+CREATE DIRECTED EDGE REDIRECTED_TO (FROM Website, TO Website,
+  observed_at DATETIME, evidence_source STRING DEFAULT "extension", is_inferred BOOL DEFAULT false)
+  WITH REVERSE_EDGE="rev_REDIRECTED_TO"
+
+CREATE DIRECTED EDGE CONTACTED (FROM Website, TO ExternalDomain,
+  observed_at DATETIME, evidence_source STRING DEFAULT "extension", is_inferred BOOL DEFAULT false)
+  WITH REVERSE_EDGE="rev_CONTACTED"
+
+CREATE DIRECTED EDGE MATCHES_INDICATOR (FROM Website, TO ThreatIndicator,
+  observed_at DATETIME, evidence_source STRING, is_inferred BOOL DEFAULT false)
+  WITH REVERSE_EDGE="rev_MATCHES_INDICATOR"
+
+CREATE DIRECTED EDGE GENERATED_FINDING (FROM Website, TO SecurityFinding,
+  observed_at DATETIME, evidence_source STRING DEFAULT "detection_engine", is_inferred BOOL DEFAULT false)
+  WITH REVERSE_EDGE="rev_GENERATED_FINDING"
+
+CREATE GRAPH TraceGuardGraph (Website, Visit, ExternalDomain, ThreatIndicator, SecurityFinding,
+  VISITED_DOMAIN, REDIRECTED_TO, CONTACTED, MATCHES_INDICATOR, GENERATED_FINDING)

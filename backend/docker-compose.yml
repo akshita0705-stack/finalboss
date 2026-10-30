@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: traceguard-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: traceguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: traceguard-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=False
+      - DATABASE_URL=postgresql+psycopg://postgres:postgrespassword@postgres:5432/traceguard
+      - SECRET_KEY=prod-secret-key-change-me-with-a-random-32char-string
+      - EXTENSION_API_KEY=tg_ext_dev_secret_key_987654321
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
+      - THREAT_INTEL_ENABLED=false
+      - THREAT_INTEL_PROVIDER=mock
+      - TIGERGRAPH_ENABLED=false
+      - TIGERGRAPH_USE_MOCK=true
+      - LLM_ENABLED=false
+      - LLM_PROVIDER=fallback
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             python seed.py &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  postgres_data:
+

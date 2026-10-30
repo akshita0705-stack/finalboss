@@ -1,0 +1,63 @@
+:root {
+  --void: #07060B; --night: #0D1117; --surface: #14121C; --surface-2: #1C1828; --ghost: #2A2538;
+  --pumpkin: #FF7A1A; --pumpkin-glow: #FFB347; --blood: #E5133A; --witch: #7B3FE4; --toxic: #39FF88;
+  --moon: #F3E9C6; --fog: #9AA3B2;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--void); color: var(--moon); font: 14px/1.45 Inter, system-ui, sans-serif; }
+h1, h2, h3 { font-family: 'Chakra Petch', Rajdhani, system-ui, sans-serif; margin: 0; }
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+:focus-visible { outline: 2px solid var(--pumpkin); outline-offset: 2px; border-radius: 4px; }
+a { color: var(--pumpkin-glow); }
+
+button, .btn {
+  font: 600 13px 'Chakra Petch', system-ui, sans-serif; border-radius: 8px; padding: 8px 12px; cursor: pointer;
+  border: 1px solid var(--pumpkin); color: var(--pumpkin); background: transparent; transition: box-shadow .2s, background .2s;
+}
+button:hover { box-shadow: 0 0 18px -4px rgba(255,122,26,.6); background: rgba(255,122,26,.08); }
+button.primary { background: var(--pumpkin); color: var(--void); }
+button.danger { border-color: var(--blood); color: #FF6B86; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+.card { position: relative; background: var(--surface); border: 1px solid var(--ghost); border-radius: 12px; padding: 12px; }
+.badge { display: inline-flex; gap: 6px; align-items: center; border: 1px solid; border-radius: 6px; padding: 1px 8px;
+  font: 600 11px 'Chakra Petch', sans-serif; letter-spacing: .04em; white-space: nowrap; }
+.muted { color: var(--fog); }
+.drip { font-family: Creepster, 'Chakra Petch', cursive; letter-spacing: .03em; color: var(--pumpkin); text-shadow: 0 0 14px rgba(255,122,26,.6), 0 3px 0 #7a2c00; }
+
+.banner { border-radius: 10px; padding: 10px 12px; border: 1px solid; font-size: 13px; }
+.banner.warn { border-color: var(--blood); background: rgba(229,19,58,.12); color: #FFB3C0; }
+.banner.info { border-color: var(--witch); background: rgba(123,63,228,.12); color: #D5C5FF; }
+
+/* Popup */
+body.popup { width: 380px; min-height: 560px; position: relative; overflow-x: hidden; }
+.sky { position: absolute; inset: 0; z-index: -1; overflow: hidden;
+  background: linear-gradient(to bottom, #07060B 0%, #0D1117 55%, #1E4D4F 130%); }
+.fog { position: absolute; left: 0; bottom: -6px; width: 200%; height: 90px; opacity: .3; animation: fog 40s linear infinite;
+  background: repeating-linear-gradient(90deg, transparent 0, rgba(154,163,178,.9) 12%, transparent 25%);
+  -webkit-mask-image: linear-gradient(to top, black, transparent); mask-image: linear-gradient(to top, black, transparent); }
+@keyframes fog { to { transform: translateX(-50%); } }
+.bat { position: absolute; top: 40px; left: -40px; width: 34px; animation: bat 16s linear infinite; }
+@keyframes bat { 50% { transform: translate(220px, 30px); } to { transform: translate(440px, 0); } }
+.wrap { padding: 14px; display: flex; flex-direction: column; gap: 12px; position: relative; }
+.hero { display: flex; align-items: center; gap: 12px; }
+.status { font: 700 16px 'Chakra Petch', sans-serif; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.row > button { flex: 1; }
+.alerts { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.alerts li { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.alerts .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce), (prefers-reduced-motion: no-preference) { .reduce .fog, .reduce .bat { animation: none; display: none; } }
+@media (prefers-reduced-motion: reduce) { .fog, .bat { animation: none; display: none; } }
+
+/* Options */
+body.options { padding: 24px 16px 64px; }
+.page { max-width: 720px; margin: 0 auto; display: grid; gap: 16px; }
+.page h2 { font-size: 18px; margin-bottom: 8px; }
+label.field { display: grid; gap: 4px; margin-top: 10px; }
+input[type=text], input[type=url], input[type=password], input[type=number], textarea {
+  width: 100%; background: var(--surface-2); color: var(--moon); border: 1px solid var(--ghost); border-radius: 8px; padding: 8px 10px; font: inherit;
+}
+ul.plain { margin: 6px 0 0; padding-left: 18px; }
+.check { display: flex; gap: 8px; align-items: center; margin-top: 8px; }

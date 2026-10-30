@@ -1,0 +1,335 @@
+diff -ruN a/src/App.tsx b/src/App.tsx
+--- a/src/App.tsx	2026-10-30 10:46:15.252081893 +0000
++++ b/src/App.tsx	2026-10-30 10:46:15.258190533 +0000
+@@ -8,6 +8,7 @@
+ const Reports = lazy(() => import('@/pages/Reports'))
+ const SiteCheck = lazy(() => import('@/pages/SiteCheck'))
+ const Login = lazy(() => import('@/pages/Login'))
++const Overview = lazy(() => import('@/pages/Overview'))
+ 
+ export default function App() {
+   useSyncEffectFlags()
+@@ -19,6 +20,7 @@
+             <Route path="/" element={<Home />} />
+             <Route path="/login" element={<Login />} />
+             <Route element={<RequireAuth />}>
++              <Route path="/app" element={<Overview />} />
+               <Route path="/app/reports" element={<Reports />} />
+               <Route path="/app/site-check" element={<SiteCheck />} />
+             </Route>
+diff -ruN a/src/components/dashboard/HealthPanel.tsx b/src/components/dashboard/HealthPanel.tsx
+--- a/src/components/dashboard/HealthPanel.tsx	1970-01-01 00:00:00.000000000 +0000
++++ b/src/components/dashboard/HealthPanel.tsx	2026-10-30 10:46:15.258783287 +0000
+@@ -0,0 +1,25 @@
++import { CheckCircle2, TriangleAlert } from 'lucide-react'
++import { HauntedCard } from '@/components/ui/HauntedCard'
++import type { DashboardSummary } from '@/types/dashboard'
++
++export function HealthPanel({ health }: { health: DashboardSummary['health'] }) {
++  const items = [health.backend, health.graph, health.threat_provider]
++  return (
++    <HauntedCard aria-labelledby="health-h">
++      <h2 id="health-h" className="mb-3 font-tech text-lg text-moon">System health</h2>
++      <ul className="flex flex-col gap-3">
++        {items.map((h) => (
++          <li key={h.label} className="flex items-start gap-3">
++            {h.ok
++              ? <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-[#39FF88]" aria-hidden />
++              : <TriangleAlert size={18} className="mt-0.5 shrink-0 text-[#FF9A4D]" aria-hidden />}
++            <div>
++              <p className="text-sm font-semibold text-moon">{h.label}: {h.ok ? 'OK' : 'Needs attention'}</p>
++              <p className="text-xs text-fog">{h.detail}</p>
++            </div>
++          </li>
++        ))}
++      </ul>
++    </HauntedCard>
++  )
++}
+diff -ruN a/src/components/dashboard/LinkExtension.tsx b/src/components/dashboard/LinkExtension.tsx
+--- a/src/components/dashboard/LinkExtension.tsx	1970-01-01 00:00:00.000000000 +0000
++++ b/src/components/dashboard/LinkExtension.tsx	2026-10-30 10:46:15.258801534 +0000
+@@ -0,0 +1,56 @@
++import { useState } from 'react'
++import { Link2 } from 'lucide-react'
++import { ApiError, keysApi, type ApiKeyInfo } from '@/services/api'
++import { GlowButton } from '@/components/ui/GlowButton'
++import { HauntedCard } from '@/components/ui/HauntedCard'
++
++async function copy(text: string) {
++  try { await navigator.clipboard.writeText(text) } catch { /* clipboard unavailable: user can select the text */ }
++}
++
++/** Creates an extension key tied to this account. The raw key is shown once and never stored in the page. */
++export function LinkExtension({ onLinked }: { onLinked: () => void }) {
++  const [created, setCreated] = useState<ApiKeyInfo | null>(null)
++  const [busy, setBusy] = useState(false)
++  const [error, setError] = useState<string | null>(null)
++
++  async function generate() {
++    setBusy(true); setError(null)
++    try {
++      setCreated(await keysApi.create(crypto.randomUUID()))
++    } catch (e) {
++      setError(e instanceof ApiError ? e.message : 'Could not create a key.')
++    } finally { setBusy(false) }
++  }
++
++  return (
++    <HauntedCard aria-labelledby="link-h">
++      <h2 id="link-h" className="mb-2 flex items-center gap-2 font-tech text-lg text-moon"><Link2 size={18} aria-hidden /> Link your extension</h2>
++      {!created ? (
++        <>
++          <p className="mb-4 text-sm text-fog">
++            No extension is linked to this account yet, so there is nothing to show. Generate a key, then paste it into
++            the extension&apos;s settings. Only data from extensions linked to your account appears here.
++          </p>
++          {error && <p role="alert" className="mb-3 text-sm text-[#FF6B86]">{error}</p>}
++          <GlowButton onClick={generate} disabled={busy}>{busy ? 'Creating…' : 'Generate extension key'}</GlowButton>
++        </>
++      ) : (
++        <div className="flex flex-col gap-3 text-sm">
++          <p className="text-[#FF9A4D]">Copy this key now. It is shown only once.</p>
++          <div>
++            <p className="text-fog">Extension key</p>
++            <code className="block break-all rounded-lg border border-ghost bg-void px-3 py-2 text-moon">{created.api_key}</code>
++            <button className="mt-1 text-xs text-pumpkin hover:underline" onClick={() => copy(created.api_key ?? '')}>Copy key</button>
++          </div>
++          <div>
++            <p className="text-fog">Installation ID</p>
++            <code className="block break-all rounded-lg border border-ghost bg-void px-3 py-2 text-moon">{created.installation_id}</code>
++            <button className="mt-1 text-xs text-pumpkin hover:underline" onClick={() => copy(created.installation_id)}>Copy ID</button>
++          </div>
++          <GlowButton variant="outline" onClick={onLinked}>I&apos;ve saved it, refresh</GlowButton>
++        </div>
++      )}
++    </HauntedCard>
++  )
++}
+diff -ruN a/src/components/layout/AppShell.tsx b/src/components/layout/AppShell.tsx
+--- a/src/components/layout/AppShell.tsx	2026-10-30 10:46:15.252418839 +0000
++++ b/src/components/layout/AppShell.tsx	2026-10-30 10:46:15.258317476 +0000
+@@ -18,6 +18,7 @@
+         <Link to="/"><GlitchText as="span" className="font-tech text-xl font-bold tracking-wide text-moon">TraceGuard AI</GlitchText></Link>
+         <nav aria-label="Main" className="flex gap-4 font-tech text-sm">
+           <NavLink to="/" end className={({ isActive }) => (isActive ? 'text-pumpkin' : 'text-fog hover:text-moon')}>Home</NavLink>
++          <NavLink to="/app" end className={({ isActive }) => (isActive ? 'text-pumpkin' : 'text-fog hover:text-moon')}>Overview</NavLink>
+           <NavLink to="/app/reports" className={({ isActive }) => (isActive ? 'text-pumpkin' : 'text-fog hover:text-moon')}>Reports</NavLink>
+           <NavLink to="/app/site-check" className={({ isActive }) => (isActive ? 'text-pumpkin' : 'text-fog hover:text-moon')}>Site Check</NavLink>
+         </nav>
+diff -ruN a/src/pages/Login.tsx b/src/pages/Login.tsx
+--- a/src/pages/Login.tsx	2026-10-30 10:46:15.252607651 +0000
++++ b/src/pages/Login.tsx	2026-10-30 10:46:15.258967278 +0000
+@@ -19,7 +19,7 @@
+   const token = useAuthStore((s) => s.token)
+   const setToken = useAuthStore((s) => s.setToken)
+   const nav = useNavigate()
+-  const from = (useLocation().state as { from?: string } | null)?.from ?? '/app/reports'
++  const from = (useLocation().state as { from?: string } | null)?.from ?? '/app'
+ 
+   if (token) return <Navigate to={from} replace />
+ 
+diff -ruN a/src/pages/Overview.tsx b/src/pages/Overview.tsx
+--- a/src/pages/Overview.tsx	1970-01-01 00:00:00.000000000 +0000
++++ b/src/pages/Overview.tsx	2026-10-30 10:46:15.258979781 +0000
+@@ -0,0 +1,137 @@
++import { useCallback, useEffect, useState } from 'react'
++import { RefreshCw } from 'lucide-react'
++import { ApiError, DEMO_MODE, dashboardApi } from '@/services/api'
++import { SEVERITIES, type Severity } from '@/types'
++import type { DashboardSummary } from '@/types/dashboard'
++import { DripHeading } from '@/components/ui/DripHeading'
++import { HauntedCard } from '@/components/ui/HauntedCard'
++import { GlowButton } from '@/components/ui/GlowButton'
++import { SeverityBadge } from '@/components/ui/SeverityBadge'
++import { TrendChart } from '@/components/reports/TrendChart'
++import { HealthPanel } from '@/components/dashboard/HealthPanel'
++import { LinkExtension } from '@/components/dashboard/LinkExtension'
++
++const DAYS = 7
++const POLL_MS = 15000
++const fmt = (iso: string) => new Date(iso).toLocaleString()
++
++export default function Overview() {
++  const [data, setData] = useState<DashboardSummary | null>(null)
++  const [error, setError] = useState<string | null>(null)
++  const [loading, setLoading] = useState(true)
++
++  const load = useCallback(async () => {
++    try {
++      setData(await dashboardApi.summary(DAYS))
++      setError(null)
++    } catch (e) {
++      setError(e instanceof ApiError ? e.message : 'Could not load the dashboard.')
++    } finally { setLoading(false) }
++  }, [])
++
++  useEffect(() => {
++    if (DEMO_MODE) return
++    load()
++    const t = setInterval(load, POLL_MS)
++    return () => clearInterval(t)
++  }, [load])
++
++  if (DEMO_MODE) {
++    return (
++      <main className="mx-auto max-w-3xl px-6 py-10">
++        <DripHeading>Overview</DripHeading>
++        <HauntedCard className="mt-6">
++          <p className="font-semibold text-[#FF9A4D]">Demo Mode</p>
++          <p className="mt-1 text-sm text-fog">The Overview shows real data from your backend. Set <code>VITE_DEMO_MODE=false</code> in <code>web/.env</code> and restart <code>npm run dev</code>.</p>
++        </HauntedCard>
++      </main>
++    )
++  }
++
++  return (
++    <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
++      <div className="flex items-center justify-between gap-3">
++        <DripHeading>Overview</DripHeading>
++        <GlowButton variant="outline" onClick={() => { setLoading(true); load() }} disabled={loading}>
++          <RefreshCw size={16} aria-hidden /> Refresh
++        </GlowButton>
++      </div>
++
++      {error && <p role="alert" className="rounded-lg border border-blood p-3 text-sm text-[#FF6B86]">{error}</p>}
++      {loading && !data && <p className="text-fog">Loading…</p>}
++
++      {data && (
++        <>
++          {data.installations_linked === 0 && <LinkExtension onLinked={load} />}
++          {data.installations_linked > 0 && data.total_events === 0 && (
++            <HauntedCard><p className="text-sm text-fog">Extension linked. Waiting for the first browsing event. Nothing has been reported yet, which is not a safe verdict.</p></HauntedCard>
++          )}
++
++          <section aria-label={`Findings by status, last ${DAYS} days`}>
++            <p className="mb-2 text-sm text-fog">Findings in the last {DAYS} days · {data.open_findings} open · {data.total_events} events recorded{data.last_event_at ? ` · last event ${fmt(data.last_event_at)}` : ''}</p>
++            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
++              {SEVERITIES.map((s: Severity) => (
++                <HauntedCard key={s} className="p-4">
++                  <SeverityBadge severity={s} />
++                  <p className="mt-3 font-tech text-3xl text-moon">{data.status_counts[s] ?? 0}</p>
++                </HauntedCard>
++              ))}
++            </div>
++          </section>
++
++          <div className="grid gap-6 lg:grid-cols-3">
++            <HauntedCard className="lg:col-span-2" aria-labelledby="trend-h">
++              <h2 id="trend-h" className="mb-3 font-tech text-lg text-moon">Flagged findings per day (HIGH RISK + SUSPICIOUS)</h2>
++              <TrendChart days={data.trend} />
++            </HauntedCard>
++            <HealthPanel health={data.health} />
++          </div>
++
++          <HauntedCard aria-labelledby="rf-h">
++            <h2 id="rf-h" className="mb-3 font-tech text-lg text-moon">Recent findings</h2>
++            {data.recent_findings.length === 0 ? (
++              <p className="text-sm text-fog">No findings yet.</p>
++            ) : (
++              <div className="overflow-x-auto">
++                <table className="w-full text-left text-sm">
++                  <thead className="text-fog"><tr><th className="py-2 pr-4">Domain</th><th className="pr-4">Status</th><th className="pr-4">Score</th><th className="pr-4">Workflow</th><th className="pr-4">When</th><th>Why</th></tr></thead>
++                  <tbody>
++                    {data.recent_findings.map((f) => (
++                      <tr key={f.id} className="border-t border-ghost align-top">
++                        <td className="py-2 pr-4 font-mono text-moon">{f.domain}</td>
++                        <td className="pr-4"><SeverityBadge severity={f.status_label} /></td>
++                        <td className="pr-4 text-moon">{f.risk_score}</td>
++                        <td className="pr-4 text-fog">{f.status}</td>
++                        <td className="pr-4 whitespace-nowrap text-fog">{fmt(f.created_at)}</td>
++                        <td className="text-fog">{f.explanation}</td>
++                      </tr>
++                    ))}
++                  </tbody>
++                </table>
++              </div>
++            )}
++          </HauntedCard>
++
++          <HauntedCard aria-labelledby="re-h">
++            <h2 id="re-h" className="mb-3 font-tech text-lg text-moon">Recent visits</h2>
++            {data.recent_events.length === 0 ? (
++              <p className="text-sm text-fog">No visits recorded yet.</p>
++            ) : (
++              <ul className="flex flex-col gap-2 text-sm">
++                {data.recent_events.map((e) => (
++                  <li key={e.id} className="flex flex-wrap items-center gap-3">
++                    <span className="font-mono text-moon">{e.domain}</span>
++                    <SeverityBadge severity={e.status_label} />
++                    <span className="text-fog">{e.event_type} · {fmt(e.created_at)}</span>
++                  </li>
++                ))}
++              </ul>
++            )}
++          </HauntedCard>
++
++          <p className="text-xs text-fog"><strong className="text-moon">Data limitations:</strong> {data.limitations}</p>
++        </>
++      )}
++    </main>
++  )
++}
+diff -ruN a/src/services/api.ts b/src/services/api.ts
+--- a/src/services/api.ts	2026-10-30 10:46:15.252670795 +0000
++++ b/src/services/api.ts	2026-10-30 10:46:15.259077167 +0000
+@@ -45,3 +45,19 @@
+     api<Token>('/auth/login', { method: 'POST', auth: false, body: JSON.stringify({ email, password }) }),
+   me: () => api<User>('/auth/me'),
+ }
++
++export interface ApiKeyInfo {
++  id: string; installation_id: string; name: string; api_key: string | null
++  is_active: boolean; created_at: string; last_used_at: string | null
++}
++
++export const keysApi = {
++  create: (installation_id: string, name = 'Chrome Extension') =>
++    api<ApiKeyInfo>('/auth/api-keys', { method: 'POST', body: JSON.stringify({ installation_id, name }) }),
++}
++
++import type { DashboardSummary } from '@/types/dashboard'
++
++export const dashboardApi = {
++  summary: (days = 7) => api<DashboardSummary>(`/dashboard/summary?days=${days}`),
++}
+diff -ruN a/src/types/dashboard.ts b/src/types/dashboard.ts
+--- a/src/types/dashboard.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/types/dashboard.ts	2026-10-30 10:46:15.259269742 +0000
+@@ -0,0 +1,36 @@
++import type { DailySummary, Severity } from '@/types'
++
++export interface RecentFinding {
++  id: string
++  domain: string
++  severity: string
++  status_label: Severity
++  risk_score: number
++  status: string
++  explanation: string
++  created_at: string
++}
++
++export interface RecentEvent {
++  id: string
++  domain: string
++  event_type: string
++  status_label: Severity
++  created_at: string
++}
++
++export interface HealthItem { ok: boolean; label: string; detail: string }
++
++export interface DashboardSummary {
++  installations_linked: number
++  last_event_at: string | null
++  total_events: number
++  total_findings: number
++  open_findings: number
++  status_counts: Record<Severity, number>
++  trend: DailySummary[]
++  recent_findings: RecentFinding[]
++  recent_events: RecentEvent[]
++  health: { backend: HealthItem; graph: HealthItem; threat_provider: HealthItem }
++  limitations: string
++}

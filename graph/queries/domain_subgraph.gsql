@@ -1,0 +1,21 @@
+// Bounded, read-only subgraph around one of the caller's websites. Used by the investigation agent and the
+// Relationship Explorer. The backend is the only caller; the browser never executes GSQL.
+// Visit vertices are deliberately NOT traversed: the agent does not need per-visit detail.
+USE GRAPH TraceGuardGraph
+
+CREATE OR REPLACE QUERY domain_subgraph(STRING p_owner, STRING p_domain, INT max_vertices = 100)
+FOR GRAPH TraceGuardGraph SYNTAX v2 {
+  SetAccum<VERTEX> @@vertices;
+  ListAccum<EDGE> @@edges;
+
+  seed = SELECT s FROM Website:s
+         WHERE s.owner == p_owner AND s.domain == p_domain;
+
+  neighbours = SELECT t
+               FROM seed:s -((REDIRECTED_TO|rev_REDIRECTED_TO|CONTACTED|MATCHES_INDICATOR|GENERATED_FINDING):e)- :t
+               ACCUM @@edges += e
+               POST-ACCUM @@vertices += t
+               LIMIT max_vertices;
+
+  PRINT seed AS center, @@vertices AS vertices, @@edges AS edges;
+}

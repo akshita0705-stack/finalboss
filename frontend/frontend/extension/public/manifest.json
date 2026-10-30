@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "TraceGuard AI",
+  "version": "0.1.0",
+  "description": "Something is watching. TraceGuard watches back. Flags suspicious sites, shady redirects and risky third-party domains.",
+  "minimum_chrome_version": "110",
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TraceGuard AI",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png" }
+  },
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "permissions": ["webNavigation", "storage", "notifications", "alarms", "tabs", "scripting"],
+  "host_permissions": ["http://localhost:8000/*"],
+  "optional_host_permissions": ["<all_urls>"]
+}

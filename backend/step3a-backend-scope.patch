@@ -1,0 +1,720 @@
+diff -ruN a/app/api/deps.py b/app/api/deps.py
+--- a/app/api/deps.py	2026-10-29 19:16:16.000000000 +0000
++++ b/app/api/deps.py	2026-10-30 10:34:05.000000000 +0000
+@@ -49,6 +49,28 @@
+     return user
+ 
+ 
++class UserScope:
++    """The authenticated user plus the installation IDs they own (via their extension API keys)."""
++
++    def __init__(self, user: User, installation_ids: List[str]):
++        self.user = user
++        self.installation_ids = installation_ids
++
++
++def get_user_scope(
++    db: Session = Depends(get_db),
++    current_user: User = Depends(get_current_user),
++) -> UserScope:
++    """JWT-authenticated scope. Data is visible only for installations linked to this user."""
++    rows = (
++        db.query(ApiKey.installation_id)
++        .filter(ApiKey.user_id == current_user.id, ApiKey.is_active == True)
++        .distinct()
++        .all()
++    )
++    return UserScope(current_user, [r[0] for r in rows])
++
++
+ def require_role(allowed_roles: List[str]):
+     """Enforce role-based access control on endpoints."""
+     def role_checker(current_user: User = Depends(get_current_user)) -> User:
+diff -ruN a/app/api/routes/__init__.py b/app/api/routes/__init__.py
+--- a/app/api/routes/__init__.py	2026-10-29 19:16:16.000000000 +0000
++++ b/app/api/routes/__init__.py	2026-10-30 10:34:41.000000000 +0000
+@@ -1,5 +1,5 @@
+ from fastapi import APIRouter
+-from app.api.routes import health, auth, events, findings, activity, reports, graph, investigations, settings, stream
++from app.api.routes import health, auth, events, findings, activity, reports, graph, investigations, settings, stream, dashboard
+ 
+ api_router = APIRouter()
+ 
+@@ -13,6 +13,7 @@
+ api_router.include_router(investigations.router)
+ api_router.include_router(settings.router)
+ api_router.include_router(stream.router)
++api_router.include_router(dashboard.router)
+ 
+ __all__ = ["api_router"]
+ 
+diff -ruN a/app/api/routes/activity.py b/app/api/routes/activity.py
+--- a/app/api/routes/activity.py	2026-10-29 19:16:16.000000000 +0000
++++ b/app/api/routes/activity.py	2026-10-30 10:34:21.000000000 +0000
+@@ -3,6 +3,7 @@
+ from fastapi import APIRouter, Depends, Query
+ from sqlalchemy.orm import Session
+ from app.db.session import get_db
++from app.api.deps import UserScope, get_user_scope
+ from app.models.browser_event import BrowserEvent
+ from app.models.visit import Visit
+ from app.models.security_finding import SecurityFinding
+@@ -21,8 +22,8 @@
+ @router.get("", response_model=ActivityAnalyticsResponse)
+ def get_activity_analytics(
+     days: int = Query(7, ge=1, le=90, description="Number of past days to aggregate"),
+-    installation_id: Optional[str] = Query(None, description="Scope by installation"),
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+     """
+     Activity timeline and repetition analytics.
+@@ -31,18 +32,20 @@
+     cutoff = utc_now() - timedelta(days=days)
+ 
+     # 1. Events
+-    ev_query = db.query(BrowserEvent).filter(BrowserEvent.created_at >= cutoff)
+-    if installation_id:
+-        ev_query = ev_query.filter(BrowserEvent.installation_id == installation_id)
++    ev_query = db.query(BrowserEvent).filter(
++        BrowserEvent.created_at >= cutoff,
++        BrowserEvent.installation_id.in_(scope.installation_ids),
++    )
+     events = ev_query.order_by(BrowserEvent.created_at.desc()).all()
+ 
+     total_events = len(events)
+     unique_domains = len(set(e.normalized_domain for e in events))
+ 
+     # 2. Visits
+-    vis_query = db.query(Visit).filter(Visit.last_seen_at >= cutoff)
+-    if installation_id:
+-        vis_query = vis_query.filter(Visit.installation_id == installation_id)
++    vis_query = db.query(Visit).filter(
++        Visit.last_seen_at >= cutoff,
++        Visit.installation_id.in_(scope.installation_ids),
++    )
+     visits = vis_query.all()
+ 
+     repeated_visits_count = sum(v.visit_count - 1 for v in visits if v.visit_count > 1)
+@@ -109,9 +112,10 @@
+     limit: int = Query(50, ge=1, le=200),
+     offset: int = Query(0, ge=0),
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+-    """List distinct tracked navigation visits with repetition counts."""
+-    query = db.query(Visit)
++    """List the current user's distinct tracked navigation visits with repetition counts."""
++    query = db.query(Visit).filter(Visit.installation_id.in_(scope.installation_ids))
+     if domain:
+         query = query.filter(Visit.normalized_domain == domain.lower())
+     visits = query.order_by(Visit.last_seen_at.desc()).offset(offset).limit(limit).all()
+diff -ruN a/app/api/routes/dashboard.py b/app/api/routes/dashboard.py
+--- a/app/api/routes/dashboard.py	1970-01-01 00:00:00.000000000 +0000
++++ b/app/api/routes/dashboard.py	2026-10-30 10:34:41.000000000 +0000
+@@ -0,0 +1,101 @@
++from datetime import timedelta
++from fastapi import APIRouter, Depends, Query
++from sqlalchemy import text
++from sqlalchemy.orm import Session
++from app.api.deps import UserScope, get_user_scope
++from app.core.config import settings
++from app.db.base import utc_now
++from app.db.session import get_db
++from app.models.browser_event import BrowserEvent
++from app.models.security_finding import SecurityFinding
++from app.schemas.dashboard import (
++    DashboardHealth, DashboardSummary, HealthItem, RecentEvent, RecentFinding, TrendDay,
++)
++from app.services.graph_service import graph_service
++from app.services.status_labels import STATUS_LABELS, to_status_label
++
++router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
++
++LIMITATIONS = (
++    "Counts cover only events reported by your linked extension installations. Encrypted traffic is not "
++    "inspected, and a missing result is not a safe verdict. LOW_OBSERVED_RISK means no significant issue "
++    "was found in the signals checked."
++)
++
++
++def _health(db: Session) -> DashboardHealth:
++    try:
++        db.execute(text("SELECT 1"))
++        backend = HealthItem(ok=True, label="Backend", detail="API and database reachable")
++    except Exception:
++        backend = HealthItem(ok=False, label="Backend", detail="Database unreachable")
++
++    g = graph_service.get_status(db)
++    graph = HealthItem(
++        ok=g.connected and not g.degraded,
++        label="Graph",
++        detail=f"{g.provider}: {g.status_message}"
++        + (f" ({g.failed_sync_jobs} failed, {g.pending_sync_jobs} pending sync jobs)" if g.failed_sync_jobs or g.pending_sync_jobs else ""),
++    )
++
++    if settings.THREAT_INTEL_ENABLED:
++        tp = HealthItem(ok=True, label="Threat provider", detail=f"{settings.THREAT_INTEL_PROVIDER} enabled")
++    else:
++        tp = HealthItem(ok=False, label="Threat provider", detail="Disabled: reputation checks are not running")
++    return DashboardHealth(backend=backend, graph=graph, threat_provider=tp)
++
++
++@router.get("/summary", response_model=DashboardSummary)
++def dashboard_summary(
++    days: int = Query(7, ge=1, le=90),
++    db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
++):
++    """Overview data for the logged-in user, limited to their own linked installations."""
++    ids = scope.installation_ids
++    now = utc_now()
++    start = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
++
++    findings_q = db.query(SecurityFinding).filter(SecurityFinding.installation_id.in_(ids))
++    events_q = db.query(BrowserEvent).filter(BrowserEvent.installation_id.in_(ids))
++
++    window = findings_q.filter(SecurityFinding.created_at >= start).all()
++    status_counts = {k: 0 for k in STATUS_LABELS}
++    trend_map = {}
++    for i in range(days):
++        d = (start + timedelta(days=i)).date().isoformat()
++        trend_map[d] = {k: 0 for k in STATUS_LABELS}
++    for f in window:
++        label = to_status_label(f.severity)
++        status_counts[label] += 1
++        day = f.created_at.date().isoformat()
++        if day in trend_map:
++            trend_map[day][label] += 1
++
++    last_event = events_q.order_by(BrowserEvent.created_at.desc()).first()
++    recent_f = findings_q.order_by(SecurityFinding.created_at.desc()).limit(10).all()
++    recent_e = events_q.order_by(BrowserEvent.created_at.desc()).limit(10).all()
++
++    return DashboardSummary(
++        installations_linked=len(ids),
++        last_event_at=last_event.created_at if last_event else None,
++        total_events=events_q.count(),
++        total_findings=findings_q.count(),
++        open_findings=findings_q.filter(SecurityFinding.status.in_(["active", "investigating"])).count(),
++        status_counts=status_counts,
++        trend=[TrendDay(date=d, counts=c) for d, c in trend_map.items()],
++        recent_findings=[
++            RecentFinding(
++                id=f.id, domain=f.domain, severity=f.severity, status_label=to_status_label(f.severity),
++                risk_score=f.risk_score, status=f.status, explanation=f.explanation, created_at=f.created_at,
++            ) for f in recent_f
++        ],
++        recent_events=[
++            RecentEvent(
++                id=e.id, domain=e.normalized_domain, event_type=e.event_type,
++                status_label=to_status_label(e.preliminary_severity), created_at=e.created_at,
++            ) for e in recent_e
++        ],
++        health=_health(db),
++        limitations=LIMITATIONS,
++    )
+diff -ruN a/app/api/routes/events.py b/app/api/routes/events.py
+--- a/app/api/routes/events.py	2026-10-29 19:16:16.000000000 +0000
++++ b/app/api/routes/events.py	2026-10-30 10:34:21.000000000 +0000
+@@ -2,7 +2,7 @@
+ from fastapi import APIRouter, Depends, Query, BackgroundTasks, status
+ from sqlalchemy.orm import Session
+ from app.db.session import get_db
+-from app.api.deps import get_installation_scope
++from app.api.deps import get_installation_scope, UserScope, get_user_scope
+ from app.schemas.event import NavigationEventCreate, EventIngestResponse, BrowserEventResponse
+ from app.models.browser_event import BrowserEvent
+ from app.services.event_service import event_service
+@@ -49,9 +49,10 @@
+     limit: int = Query(50, ge=1, le=200),
+     offset: int = Query(0, ge=0),
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+-    """List browser events with optional domain, severity, and pagination filters."""
+-    query = db.query(BrowserEvent)
++    """List the current user's browser events with optional domain, severity, and pagination filters."""
++    query = db.query(BrowserEvent).filter(BrowserEvent.installation_id.in_(scope.installation_ids))
+ 
+     if domain:
+         query = query.filter(BrowserEvent.normalized_domain == domain.lower())
+diff -ruN a/app/api/routes/findings.py b/app/api/routes/findings.py
+--- a/app/api/routes/findings.py	2026-10-29 19:16:16.000000000 +0000
++++ b/app/api/routes/findings.py	2026-10-30 10:34:21.000000000 +0000
+@@ -2,6 +2,7 @@
+ from fastapi import APIRouter, Depends, HTTPException, Query, status
+ from sqlalchemy.orm import Session
+ from app.db.session import get_db
++from app.api.deps import UserScope, get_user_scope
+ from app.models.security_finding import SecurityFinding
+ from app.schemas.finding import SecurityFindingResponse, SecurityFindingUpdate
+ 
+@@ -17,9 +18,10 @@
+     limit: int = Query(50, ge=1, le=200),
+     offset: int = Query(0, ge=0),
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+-    """List security findings with filtering and pagination."""
+-    query = db.query(SecurityFinding)
++    """List the current user's security findings with filtering and pagination."""
++    query = db.query(SecurityFinding).filter(SecurityFinding.installation_id.in_(scope.installation_ids))
+ 
+     if domain:
+         query = query.filter(SecurityFinding.domain == domain.lower())
+@@ -38,9 +40,13 @@
+ def get_security_finding_details(
+     finding_id: str,
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+     """Retrieve full details and structured evidence for a security finding."""
+-    finding = db.query(SecurityFinding).filter(SecurityFinding.id == finding_id).first()
++    finding = db.query(SecurityFinding).filter(
++        SecurityFinding.id == finding_id,
++        SecurityFinding.installation_id.in_(scope.installation_ids),
++    ).first()
+     if not finding:
+         raise HTTPException(
+             status_code=status.HTTP_404_NOT_FOUND,
+@@ -54,9 +60,13 @@
+     finding_id: str,
+     update_in: SecurityFindingUpdate,
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+     """Update finding status (e.g., active -> resolved or false_positive)."""
+-    finding = db.query(SecurityFinding).filter(SecurityFinding.id == finding_id).first()
++    finding = db.query(SecurityFinding).filter(
++        SecurityFinding.id == finding_id,
++        SecurityFinding.installation_id.in_(scope.installation_ids),
++    ).first()
+     if not finding:
+         raise HTTPException(
+             status_code=status.HTTP_404_NOT_FOUND,
+diff -ruN a/app/api/routes/reports.py b/app/api/routes/reports.py
+--- a/app/api/routes/reports.py	2026-10-29 18:52:04.000000000 +0000
++++ b/app/api/routes/reports.py	2026-10-30 10:34:21.000000000 +0000
+@@ -3,6 +3,7 @@
+ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+ from sqlalchemy.orm import Session
+ from app.db.session import get_db
++from app.api.deps import UserScope, get_user_scope
+ from app.models.daily_report import DailyReport
+ from app.schemas.report import ReportDetailResponse, DailyActivityReportData, DailySecurityReportData
+ from app.services.report_service import report_service
+@@ -13,8 +14,8 @@
+ @router.get("/activity/daily", response_model=DailyActivityReportData)
+ def get_daily_activity_report(
+     report_date: Optional[date] = Query(None, description="Report calendar date (YYYY-MM-DD), defaults to today"),
+-    installation_id: Optional[str] = Query(None, description="Scope by installation ID"),
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+     """
+     Generate or retrieve a Daily Browsing Activity Report.
+@@ -24,7 +25,7 @@
+     report_data = report_service.generate_daily_activity_report(
+         db=db,
+         target_date=target_date,
+-        installation_id=installation_id,
++        installation_ids=scope.installation_ids,
+     )
+     return report_data
+ 
+@@ -32,8 +33,8 @@
+ @router.get("/security/daily", response_model=DailySecurityReportData)
+ def get_daily_security_report(
+     report_date: Optional[date] = Query(None, description="Report calendar date (YYYY-MM-DD), defaults to today"),
+-    installation_id: Optional[str] = Query(None, description="Scope by installation ID"),
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+     """
+     Generate or retrieve a Daily Security Findings Report.
+@@ -43,7 +44,7 @@
+     report_data = report_service.generate_daily_security_report(
+         db=db,
+         target_date=target_date,
+-        installation_id=installation_id,
++        installation_ids=scope.installation_ids,
+     )
+     return report_data
+ 
+@@ -52,9 +53,13 @@
+ def get_report_by_id(
+     report_id: str,
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+     """Retrieve an existing report record by its unique ID."""
+-    report = db.query(DailyReport).filter(DailyReport.id == report_id).first()
++    report = db.query(DailyReport).filter(
++        DailyReport.id == report_id,
++        DailyReport.installation_id.in_(scope.installation_ids),
++    ).first()
+     if not report:
+         raise HTTPException(
+             status_code=status.HTTP_404_NOT_FOUND,
+@@ -68,9 +73,13 @@
+     report_id: str,
+     format: str = Query("csv", pattern="^(csv|json)$"),
+     db: Session = Depends(get_db),
++    scope: UserScope = Depends(get_user_scope),
+ ):
+     """Export report in CSV or JSON format."""
+-    report = db.query(DailyReport).filter(DailyReport.id == report_id).first()
++    report = db.query(DailyReport).filter(
++        DailyReport.id == report_id,
++        DailyReport.installation_id.in_(scope.installation_ids),
++    ).first()
+     if not report:
+         raise HTTPException(
+             status_code=status.HTTP_404_NOT_FOUND,
+diff -ruN a/app/schemas/dashboard.py b/app/schemas/dashboard.py
+--- a/app/schemas/dashboard.py	1970-01-01 00:00:00.000000000 +0000
++++ b/app/schemas/dashboard.py	2026-10-30 10:34:41.000000000 +0000
+@@ -0,0 +1,53 @@
++from datetime import datetime
++from typing import Dict, List, Optional
++from pydantic import BaseModel
++
++
++class TrendDay(BaseModel):
++    date: str
++    counts: Dict[str, int]  # keyed by status label (HIGH_RISK, SUSPICIOUS, ...)
++
++
++class RecentFinding(BaseModel):
++    id: str
++    domain: str
++    severity: str        # raw backend severity: low/medium/high/critical/unknown
++    status_label: str    # mapped label: HIGH_RISK/SUSPICIOUS/NEEDS_REVIEW/LOW_OBSERVED_RISK/UNKNOWN
++    risk_score: int
++    status: str          # workflow state: active/investigating/resolved/false_positive
++    explanation: str
++    created_at: datetime
++
++
++class RecentEvent(BaseModel):
++    id: str
++    domain: str
++    event_type: str
++    status_label: str
++    created_at: datetime
++
++
++class HealthItem(BaseModel):
++    ok: bool
++    label: str
++    detail: str
++
++
++class DashboardHealth(BaseModel):
++    backend: HealthItem
++    graph: HealthItem
++    threat_provider: HealthItem
++
++
++class DashboardSummary(BaseModel):
++    installations_linked: int
++    last_event_at: Optional[datetime] = None
++    total_events: int
++    total_findings: int
++    open_findings: int
++    status_counts: Dict[str, int]
++    trend: List[TrendDay]
++    recent_findings: List[RecentFinding]
++    recent_events: List[RecentEvent]
++    health: DashboardHealth
++    limitations: str
+diff -ruN a/app/services/report_service.py b/app/services/report_service.py
+--- a/app/services/report_service.py	2026-10-29 19:16:18.000000000 +0000
++++ b/app/services/report_service.py	2026-10-30 10:34:05.000000000 +0000
+@@ -21,6 +21,7 @@
+         db: Session,
+         target_date: datetime.date,
+         installation_id: Optional[str] = None,
++        installation_ids: Optional[List[str]] = None,
+     ) -> Dict[str, Any]:
+         """
+         Aggregate and build daily browsing activity report for a specific calendar day.
+@@ -36,6 +37,8 @@
+         )
+         if installation_id:
+             ev_query = ev_query.filter(BrowserEvent.installation_id == installation_id)
++        if installation_ids is not None:
++            ev_query = ev_query.filter(BrowserEvent.installation_id.in_(installation_ids))
+         events = ev_query.order_by(BrowserEvent.created_at.asc()).all()
+ 
+         total_events = len(events)
+@@ -48,6 +51,8 @@
+         )
+         if installation_id:
+             vis_query = vis_query.filter(Visit.installation_id == installation_id)
++        if installation_ids is not None:
++            vis_query = vis_query.filter(Visit.installation_id.in_(installation_ids))
+         visits = vis_query.all()
+ 
+         repeated_visits = sum(v.visit_count - 1 for v in visits if v.visit_count > 1)
+@@ -116,7 +121,7 @@
+ 
+         # Save or update DailyReport record
+         report_record = DailyReport(
+-            installation_id=installation_id,
++            installation_id=installation_id or (installation_ids[0] if installation_ids and len(installation_ids) == 1 else None),
+             report_type="activity",
+             date_range_start=start_dt,
+             date_range_end=end_dt,
+@@ -135,6 +140,7 @@
+         db: Session,
+         target_date: datetime.date,
+         installation_id: Optional[str] = None,
++        installation_ids: Optional[List[str]] = None,
+     ) -> Dict[str, Any]:
+         """
+         Aggregate and build daily security findings report for a specific calendar day.
+@@ -149,6 +155,8 @@
+         )
+         if installation_id:
+             find_query = find_query.filter(SecurityFinding.installation_id == installation_id)
++        if installation_ids is not None:
++            find_query = find_query.filter(SecurityFinding.installation_id.in_(installation_ids))
+         findings = find_query.all()
+ 
+         total_findings = len(findings)
+@@ -253,7 +261,7 @@
+ 
+         # Save to database
+         report_record = DailyReport(
+-            installation_id=installation_id,
++            installation_id=installation_id or (installation_ids[0] if installation_ids and len(installation_ids) == 1 else None),
+             report_type="security",
+             date_range_start=start_dt,
+             date_range_end=end_dt,
+diff -ruN a/app/services/status_labels.py b/app/services/status_labels.py
+--- a/app/services/status_labels.py	1970-01-01 00:00:00.000000000 +0000
++++ b/app/services/status_labels.py	2026-10-30 10:34:41.000000000 +0000
+@@ -0,0 +1,18 @@
++"""Maps the engine's raw severities to the five user-facing status labels.
++
++critical -> HIGH_RISK, high -> SUSPICIOUS, medium -> NEEDS_REVIEW, low -> LOW_OBSERVED_RISK.
++Anything else (including "unknown") -> UNKNOWN. A missing result is never mapped to a safe label.
++"""
++
++STATUS_LABELS = ["HIGH_RISK", "SUSPICIOUS", "NEEDS_REVIEW", "LOW_OBSERVED_RISK", "UNKNOWN"]
++
++_MAP = {
++    "critical": "HIGH_RISK",
++    "high": "SUSPICIOUS",
++    "medium": "NEEDS_REVIEW",
++    "low": "LOW_OBSERVED_RISK",
++}
++
++
++def to_status_label(severity: str) -> str:
++    return _MAP.get((severity or "").lower(), "UNKNOWN")
+diff -ruN a/tests/conftest.py b/tests/conftest.py
+--- a/tests/conftest.py	2026-10-29 19:16:18.000000000 +0000
++++ b/tests/conftest.py	2026-10-30 10:34:56.000000000 +0000
+@@ -89,3 +89,25 @@
+         "X-Installation-ID": "test-install-chrome-99",
+     }
+ 
++
++def make_user_headers(db, email, installation_id=None):
++    """Create a user (optionally owning an extension installation) and return bearer headers."""
++    user = User(email=email, hashed_password=get_password_hash("TestUserPass123!"), role="user")
++    db.add(user)
++    db.commit()
++    db.refresh(user)
++    if installation_id:
++        db.add(ApiKey(installation_id=installation_id, user_id=user.id,
++                      hashed_key=hash_api_key(f"key-{email}"), name="test"))
++        db.commit()
++    return {"Authorization": f"Bearer {create_access_token(subject=user.id, role='user')}"}
++
++
++@pytest.fixture
++def linked_admin_headers(db_session, test_admin_user, admin_auth_headers):
++    """Admin user who owns the same installation that `extension_auth_headers` posts events for."""
++    db_session.add(ApiKey(installation_id="test-install-chrome-99", user_id=test_admin_user.id,
++                          hashed_key=hash_api_key("linked-admin-key"), name="test"))
++    db_session.commit()
++    return admin_auth_headers
++
+diff -ruN a/tests/test_api_endpoints.py b/tests/test_api_endpoints.py
+--- a/tests/test_api_endpoints.py	2026-10-29 19:16:18.000000000 +0000
++++ b/tests/test_api_endpoints.py	2026-10-30 10:34:56.000000000 +0000
+@@ -52,7 +52,7 @@
+     assert res_key.json()["api_key"].startswith("tg_ext_")
+ 
+ 
+-def test_post_event_with_extension_key(client, extension_auth_headers):
++def test_post_event_with_extension_key(client, extension_auth_headers, linked_admin_headers):
+     payload = {
+         "url": "https://fastapi.tiangolo.com/tutorial/",
+         "event_type": "navigation",
+@@ -66,12 +66,12 @@
+     assert data["preliminary_assessment"]["risk_score"] == 0
+ 
+     # List events
+-    res_list = client.get("/api/v1/events?domain=tiangolo.com")
++    res_list = client.get("/api/v1/events?domain=tiangolo.com", headers=linked_admin_headers)
+     assert res_list.status_code == 200
+     assert len(res_list.json()) >= 1
+ 
+ 
+-def test_findings_workflow(client, extension_auth_headers):
++def test_findings_workflow(client, extension_auth_headers, linked_admin_headers):
+     # Post a suspicious event to generate a finding
+     payload = {
+         "url": "http://apple-support-verify.phishingsite.top/login",
+@@ -81,29 +81,30 @@
+     client.post("/api/v1/events", headers=extension_auth_headers, json=payload)
+ 
+     # Query findings
+-    res_findings = client.get("/api/v1/findings?domain=phishingsite.top")
++    res_findings = client.get("/api/v1/findings?domain=phishingsite.top", headers=linked_admin_headers)
+     assert res_findings.status_code == 200
+     findings = res_findings.json()
+     assert len(findings) >= 1
+     finding_id = findings[0]["id"]
+ 
+     # Retrieve finding detail
+-    res_detail = client.get(f"/api/v1/findings/{finding_id}")
++    res_detail = client.get(f"/api/v1/findings/{finding_id}", headers=linked_admin_headers)
+     assert res_detail.status_code == 200
+     assert res_detail.json()["id"] == finding_id
+ 
+     # Update finding status
+     res_update = client.patch(
+         f"/api/v1/findings/{finding_id}",
++        headers=linked_admin_headers,
+         json={"status": "resolved"},
+     )
+     assert res_update.status_code == 200
+     assert res_update.json()["status"] == "resolved"
+ 
+ 
+-def test_activity_and_graph_apis(client):
++def test_activity_and_graph_apis(client, admin_auth_headers):
+     # Test activity
+-    res_act = client.get("/api/v1/activity?days=7")
++    res_act = client.get("/api/v1/activity?days=7", headers=admin_auth_headers)
+     assert res_act.status_code == 200
+     assert "total_events" in res_act.json()
+     assert "unique_domains" in res_act.json()
+diff -ruN a/tests/test_auth_and_isolation.py b/tests/test_auth_and_isolation.py
+--- a/tests/test_auth_and_isolation.py	2026-10-29 19:16:18.000000000 +0000
++++ b/tests/test_auth_and_isolation.py	2026-10-30 10:35:08.000000000 +0000
+@@ -62,15 +62,18 @@
+     db_session.add_all([ev_a, ev_b])
+     db_session.commit()
+ 
+-    # Activity query scoped to install-alpha
+-    res_a = client.get("/api/v1/activity?installation_id=install-alpha")
++    from conftest import make_user_headers
++    headers_a = make_user_headers(db_session, "alpha@example.com", "install-alpha")
++    headers_b = make_user_headers(db_session, "beta@example.com", "install-beta")
++
++    # Each user sees only the installation they own; a client-supplied installation_id is ignored
++    res_a = client.get("/api/v1/activity?installation_id=install-beta", headers=headers_a)
+     assert res_a.status_code == 200
+     domains_a = [t["domain"] for t in res_a.json()["recent_timeline"]]
+     assert "alpha-internal.org" in domains_a
+     assert "beta-internal.org" not in domains_a
+ 
+-    # Activity query scoped to install-beta
+-    res_b = client.get("/api/v1/activity?installation_id=install-beta")
++    res_b = client.get("/api/v1/activity", headers=headers_b)
+     assert res_b.status_code == 200
+     domains_b = [t["domain"] for t in res_b.json()["recent_timeline"]]
+     assert "beta-internal.org" in domains_b
+diff -ruN a/tests/test_dashboard_scope.py b/tests/test_dashboard_scope.py
+--- a/tests/test_dashboard_scope.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/test_dashboard_scope.py	2026-10-30 10:35:08.000000000 +0000
+@@ -0,0 +1,82 @@
++from conftest import make_user_headers
++from app.models.browser_event import BrowserEvent
++from app.models.security_finding import SecurityFinding
++
++PROTECTED = [
++    "/api/v1/dashboard/summary",
++    "/api/v1/findings",
++    "/api/v1/events",
++    "/api/v1/activity",
++    "/api/v1/activity/visits",
++    "/api/v1/reports/security/daily",
++    "/api/v1/reports/activity/daily",
++]
++
++
++def _finding(db, inst, domain, severity, score=50):
++    f = SecurityFinding(
++        installation_id=inst, domain=domain, category="phishing", severity=severity,
++        risk_score=score, explanation=f"test {severity}", rule_id="TEST",
++    )
++    db.add(f)
++    db.commit()
++    db.refresh(f)
++    return f
++
++
++def test_protected_endpoints_require_login(client):
++    for path in PROTECTED:
++        assert client.get(path).status_code == 401, path
++
++
++def test_user_without_linked_installation_sees_nothing(client, db_session):
++    h = make_user_headers(db_session, "nolink@example.com")
++    _finding(db_session, "someone-elses-install", "secret.example.test", "critical")
++    assert client.get("/api/v1/findings", headers=h).json() == []
++    s = client.get("/api/v1/dashboard/summary", headers=h).json()
++    assert s["installations_linked"] == 0
++    assert s["total_findings"] == 0
++    assert s["recent_findings"] == []
++
++
++def test_finding_access_is_limited_to_owner(client, db_session):
++    ha = make_user_headers(db_session, "a@example.com", "inst-a")
++    hb = make_user_headers(db_session, "b@example.com", "inst-b")
++    fa = _finding(db_session, "inst-a", "a-only.example.test", "high")
++
++    assert client.get(f"/api/v1/findings/{fa.id}", headers=ha).status_code == 200
++    assert client.get(f"/api/v1/findings/{fa.id}", headers=hb).status_code == 404
++    assert client.patch(f"/api/v1/findings/{fa.id}", headers=hb, json={"status": "resolved"}).status_code == 404
++    assert [f["domain"] for f in client.get("/api/v1/findings", headers=hb).json()] == []
++
++
++def test_dashboard_summary_maps_statuses_and_scopes(client, db_session):
++    ha = make_user_headers(db_session, "sum-a@example.com", "inst-sum-a")
++    for sev in ("critical", "high", "medium", "low", "unknown"):
++        _finding(db_session, "inst-sum-a", f"{sev}.example.test", sev)
++    _finding(db_session, "inst-other", "other.example.test", "critical")  # must not be counted
++    db_session.add(BrowserEvent(
++        idempotency_key="sum-ev-1", installation_id="inst-sum-a", normalized_domain="news.example.test",
++        sanitized_url_path="/", event_type="navigation", preliminary_severity="low",
++    ))
++    db_session.commit()
++
++    s = client.get("/api/v1/dashboard/summary?days=7", headers=ha).json()
++    assert s["installations_linked"] == 1
++    assert s["status_counts"] == {
++        "HIGH_RISK": 1, "SUSPICIOUS": 1, "NEEDS_REVIEW": 1, "LOW_OBSERVED_RISK": 1, "UNKNOWN": 1,
++    }
++    assert s["total_findings"] == 5
++    assert s["total_events"] == 1
++    assert len(s["trend"]) == 7
++    assert {f["domain"] for f in s["recent_findings"]} == {f"{x}.example.test" for x in ("critical", "high", "medium", "low", "unknown")}
++    assert set(s["health"]) == {"backend", "graph", "threat_provider"}
++    assert "not a safe verdict" in s["limitations"]
++
++
++def test_security_report_is_scoped_to_user(client, db_session):
++    ha = make_user_headers(db_session, "rep-a@example.com", "inst-rep-a")
++    _finding(db_session, "inst-rep-a", "mine.example.test", "high")
++    _finding(db_session, "inst-rep-zzz", "theirs.example.test", "high")
++    r = client.get("/api/v1/reports/security/daily", headers=ha).json()
++    assert r["total_findings"] == 1

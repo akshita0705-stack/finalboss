@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-void: #07060B;
+  --bg-night: #0D1117;
+  --bg-surface: #14121C;
+  --bg-surface-2: #1C1828;
+  --border-ghost: #2A2538;
+  --pumpkin: #FF7A1A;
+  --pumpkin-glow: #FFB347;
+  --blood: #E5133A;
+  --witch-purple: #7B3FE4;
+  --toxic-green: #39FF88;
+  --moon: #F3E9C6;
+  --fog: #9AA3B2;
+  --sky-teal: #1E4D4F;
+}
+
+html { color-scheme: dark; }
+body {
+  margin: 0;
+  background: var(--bg-void);
+  color: var(--moon);
+  font-family: Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 { font-family: 'Chakra Petch', Rajdhani, sans-serif; }
+
+:focus-visible { outline: 2px solid var(--pumpkin); outline-offset: 2px; border-radius: 4px; }
+
+/* Atmosphere: pause everything when the tab is hidden or effects are reduced */
+html[data-hidden='true'] .atmos *,
+html[data-hidden='true'] .atmos { animation-play-state: paused !important; }
+html[data-reduce='true'] .atmos-heavy { display: none !important; }
+html[data-reduce='true'] .atmos * { animation: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+  .atmos-heavy { display: none !important; }
+}
+
+/* Decorative text effects (headings only) */
+.neon-flicker { animation: flicker 6s linear infinite; text-shadow: 0 0 12px rgba(255,122,26,.7), 0 0 32px rgba(255,122,26,.35); }
+.glitch { position: relative; display: inline-block; }
+.glitch:hover::before, .glitch:hover::after, .glitch:focus-visible::before, .glitch:focus-visible::after {
+  content: attr(data-text); position: absolute; inset: 0; pointer-events: none;
+}
+.glitch:hover::before { color: #ff2d55; transform: translate(-2px, 0); clip-path: inset(0 0 55% 0); animation: glitch-a .3s steps(2) 1; }
+.glitch:hover::after  { color: #22d3ee; transform: translate(2px, 0);  clip-path: inset(50% 0 0 0); animation: glitch-a .3s steps(2) 1 reverse; }
+@keyframes glitch-a { 0% { transform: translate(0); } 50% { transform: translate(-3px, 1px); } 100% { transform: translate(2px, -1px); } }
+
+.drip-text {
+  font-family: Creepster, Nosifer, cursive; letter-spacing: .03em; line-height: 1;
+  color: var(--pumpkin); text-shadow: 0 0 18px rgba(255,122,26,.6), 0 4px 0 #7a2c00;
+}
+.drip-text.blood { color: var(--blood); text-shadow: 0 0 22px rgba(229,19,58,.7), 0 4px 0 #5c0618; }
+
+.shimmer { background: linear-gradient(90deg, var(--bg-surface) 0%, var(--bg-surface-2) 50%, var(--bg-surface) 100%); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+.cobweb::after {
+  content: ''; position: absolute; top: 0; right: 0; width: 38px; height: 38px; opacity: .22; pointer-events: none;
+  background: radial-gradient(circle at 100% 0, transparent 30%, var(--fog) 31%, transparent 33%, transparent 52%, var(--fog) 53%, transparent 55%, transparent 74%, var(--fog) 75%, transparent 77%);
+}
+
+/* Dripping headline */
+.drip { position: absolute; top: 78%; width: 6px; height: var(--h, 18px); border-radius: 0 0 6px 6px; transform-origin: top; animation: drip 4.5s ease-in-out infinite; }
+@keyframes drip { 0%, 15% { transform: scaleY(.2); opacity: 0; } 35% { opacity: 1; } 70%, 100% { transform: scaleY(1); opacity: 0; } }
+
+/* HIGH RISK banner pulse (opacity only) */
+.alert-pulse { animation: alert-pulse 2.2s ease-in-out infinite; }
+@keyframes alert-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(229,19,58,.0); } 50% { box-shadow: 0 0 32px 0 rgba(229,19,58,.45); } }
+
+@media print {
+  html, body { background: #fff !important; }
+  * { color: #000 !important; background: transparent !important; box-shadow: none !important; text-shadow: none !important; border-color: #999 !important; animation: none !important; }
+  .print-hide, .atmos, .cobweb::after { display: none !important; }
+}
+
+.shake { animation: shake .6s cubic-bezier(.36,.07,.19,.97) 1; }
+@keyframes shake { 10%, 90% { transform: translate3d(-2px,0,0); } 20%, 80% { transform: translate3d(4px,0,0); } 30%, 50%, 70% { transform: translate3d(-6px,0,0); } 40%, 60% { transform: translate3d(6px,0,0); } }
